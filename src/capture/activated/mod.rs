@@ -235,6 +235,46 @@ impl<T: Activated + ?Sized> Capture<T> {
         self.check_err(return_code == 0)
     }
 
+    #[cfg(feature = "capture-stream")]
+    pub(crate) fn dispatch<F>(
+        &mut self,
+        count: std::num::NonZeroI32,
+        handler: F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut(Packet),
+    {
+        let mut handler = Handler {
+            func: AssertUnwindSafe(handler),
+            panic_payload: None,
+            handle: self.handle,
+        };
+        let return_code = unsafe {
+            raw::pcap_dispatch(
+                self.handle.as_ptr(),
+                count.get(),
+                Handler::<F>::callback,
+                &mut handler as *mut Handler<AssertUnwindSafe<F>> as *mut u8,
+            )
+        };
+        if let Some(e) = handler.panic_payload {
+            resume_unwind(e);
+        }
+        if return_code == 0 {
+            Err(Error::TimeoutExpired)
+        } else {
+            self.check_err(return_code == count.get())
+        }
+    }
+
+    #[cfg(feature = "capture-stream")]
+    pub(crate) fn dispatch_once<F>(&mut self, handler: F) -> Result<(), Error>
+    where
+        F: FnMut(Packet),
+    {
+        self.dispatch(std::num::NonZeroI32::new(1).unwrap(), handler)
+    }
+
     /// Compiles the string into a filter program using `pcap_compile`.
     pub fn compile(&self, program: &str, optimize: bool) -> Result<BpfProgram, Error> {
         let program = CString::new(program)?;

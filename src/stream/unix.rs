@@ -49,15 +49,24 @@ impl<T: Activated + ?Sized, C: PacketCodec> futures::Stream for PacketStream<T, 
 
         loop {
             let mut guard = ready!(stream.inner.poll_read_ready_mut(cx))?;
-            match guard.try_io(
-                |inner| match inner.get_mut().get_inner_mut().next_packet() {
-                    Ok(p) => Ok(Ok(codec.decode(p))),
+            match guard.try_io(|inner| {
+                let mut output: Option<C::Item> = None;
+                match inner.get_mut().get_inner_mut().dispatch_once(|p| {
+                    output = Some(codec.decode(p));
+                }) {
+                    Ok(()) => match output {
+                        Some(output) => Ok(Ok(output)),
+                        None => Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "dispatch handler not called",
+                        )),
+                    },
                     Err(e @ Error::TimeoutExpired) => {
                         Err(io::Error::new(io::ErrorKind::WouldBlock, e))
                     }
                     Err(e) => Ok(Err(e)),
-                },
-            ) {
+                }
+            }) {
                 Ok(result) => {
                     return Poll::Ready(Some(result?));
                 }
